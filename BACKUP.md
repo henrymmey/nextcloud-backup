@@ -2,9 +2,7 @@
 
 This guide explains how to install, configure and use the Nextcloud backup system.
 
-`backup.sh` creates an **encrypted BorgBackup archive** containing the configured Nextcloud files and a **PostgreSQL SQL dump**.
-
-> **Important:** This project is designed for a specific Docker Compose installation. Before the first run, compare the service names, volumes and filesystem paths with your actual `docker-compose.yml`.
+`backup.sh` creates an encrypted BorgBackup archive containing the configured Nextcloud files and a PostgreSQL SQL dump.
 
 ## 1. Requirements
 
@@ -18,11 +16,9 @@ The Nextcloud server needs:
 - a running Nextcloud installation using PostgreSQL
 - enough temporary disk space for the PostgreSQL dump
 
-The backup repository must be reachable before a backup can be created.
-
 ## 2. Install the scripts
 
-A typical installation could look like this:
+A typical installation:
 
 ```text
 /opt/nextcloud/
@@ -30,7 +26,8 @@ A typical installation could look like this:
 ├── .env
 ├── backup.sh
 ├── restore.sh
-└── restore-test.sh
+├── restore-test.sh
+└── borg-check.sh
 ```
 
 Make the scripts executable:
@@ -39,19 +36,20 @@ Make the scripts executable:
 chmod +x /opt/nextcloud/backup.sh
 chmod +x /opt/nextcloud/restore.sh
 chmod +x /opt/nextcloud/restore-test.sh
+chmod +x /opt/nextcloud/borg-check.sh
 ```
 
 ## 3. Configure `.env`
 
-Start with the example configuration:
+Create the file from `.env.example` and protect it:
 
 ```bash
 cp .env.example /opt/nextcloud/.env
-chmod 600 /opt/nextcloud/.env
 chown root:root /opt/nextcloud/.env
+chmod 600 /opt/nextcloud/.env
 ```
 
-At minimum, configure:
+At minimum:
 
 ```env
 DB_NAME=nextcloud
@@ -62,106 +60,27 @@ BORG_REPO=user@backup-server:/path/to/repository
 BORG_PASSPHRASE=YOUR_BORG_PASSPHRASE
 ```
 
-Optional health-check settings:
+The scripts deliberately do **not** execute `.env` as shell code. Only simple `KEY=VALUE` settings are read. This prevents arbitrary commands in `.env` from being executed as root.
 
-```env
-HEALTHCHECK_URL=http://127.0.0.1/status.php
-HEALTHCHECK_TIMEOUT=120
-POLL_INTERVAL=2
-```
+Never commit the real `.env` to Git.
 
-**Never commit passwords or passphrases to Git.** The repository contains a `.gitignore` that protects the real `.env` from accidental commits.
+## 4. Backup consistency
 
-## 4. Check paths and container names
+Before touching the data, the script performs its preflight checks. It then enables Nextcloud Maintenance Mode and stops all currently running Compose services except PostgreSQL. PostgreSQL remains available for `pg_dump`.
 
-The scripts use defaults for a specific Nextcloud layout. Important settings include:
+This reduces the risk of files changing while the database dump and filesystem backup are created. It is stronger than Maintenance Mode alone, but it is not a filesystem snapshot. If the underlying filesystem or an external process changes files independently, absolute atomicity cannot be guaranteed.
 
-```text
-COMPOSE_DIR
-COMPOSE_FILE
-ENV_FILE
-APP_CONTAINER
-DB_CONTAINER
-NC_CONFIG
-NC_DATA
-NC_APPDATA
-NC_EXTERNAL
-NC_VOLUME
-BORG_REPO
-```
+After the backup completes, the script starts the Nextcloud app service again and disables Maintenance Mode. If startup fails, the backup is reported as failed rather than silently claiming success.
 
-If your installation uses different paths, service names or volume names, adjust the configuration accordingly.
+## 5. Temporary storage checks
 
-For example:
+The script checks free space before `pg_dump` using a conservative multiple of the database size because a plain SQL dump can be larger than PostgreSQL's internal database size.
 
-```bash
-export APP_CONTAINER=nextcloud
-export DB_CONTAINER=postgres
-```
+After `pg_dump`, it checks free space again and refuses to continue if the configured safety margin has been exhausted.
 
-Do not change these values until you have checked the actual Docker Compose configuration.
+## 6. What is backed up?
 
-## 5. Test Borg access
-
-Before creating the first backup, verify that Borg can access the repository:
-
-```bash
-borg info "$BORG_REPO"
-```
-
-If SSH is used, make sure the required key is available. For example:
-
-```env
-BORG_RSH=ssh -i /root/.ssh/borg_backup
-```
-
-The Borg passphrase must also be available to the backup script.
-
-## 6. Create the first backup
-
-Once Nextcloud is running and the configuration has been checked:
-
-```bash
-sudo /opt/nextcloud/backup.sh
-```
-
-The script performs several preflight checks before starting the backup. It checks, among other things, Docker, Docker Compose, PostgreSQL, Borg, configured paths and available temporary storage.
-
-Only after the preflight checks succeed is Nextcloud placed into Maintenance Mode.
-
-## 7. What happens during a backup?
-
-The process is roughly:
-
-```text
-Check the system
-      ↓
-Acquire backup lock
-      ↓
-Check PostgreSQL
-      ↓
-Enable Nextcloud Maintenance Mode
-      ↓
-Create PostgreSQL dump
-      ↓
-Validate dump + calculate SHA-256
-      ↓
-Create backup metadata
-      ↓
-Create Borg archive
-      ↓
-Validate archive
-      ↓
-Apply retention policy
-      ↓
-Disable Maintenance Mode
-```
-
-If the script is interrupted or an error occurs, it attempts to disable Maintenance Mode and remove temporary files.
-
-## 8. What is backed up?
-
-The archive contains the configured parts required for a restore:
+The archive contains:
 
 - `docker-compose.yml`
 - `.env`
@@ -175,31 +94,31 @@ The archive contains the configured parts required for a restore:
 
 The PostgreSQL live data directory is not copied as raw database files. The logical SQL dump is used instead.
 
-## 9. Verify backups
+## 7. Backup validation
 
-List the available archives:
+After the Borg archive is created, the script checks that all expected paths are present.
+
+When `VERIFY_ARCHIVE_DATA=true` (the default), it also:
+
+1. runs `borg check --archives-only --verify-data` for the new archive
+2. extracts the PostgreSQL dump again
+3. compares its SHA-256 hash with the original dump
+
+This means the new archive's encrypted data is actually read and authenticated instead of merely checking that an archive listing exists.
+
+## 8. Regular repository integrity checks
+
+`borg-check.sh` performs a repository-wide integrity check including data verification:
 
 ```bash
-borg list "$BORG_REPO"
+sudo /opt/nextcloud/borg-check.sh
 ```
 
-Show repository information:
+Run this separately, for example weekly. A full `borg check --verify-data` can be expensive for large repositories and therefore does not need to run after every daily backup.
 
-```bash
-borg info "$BORG_REPO"
-```
+## 9. Retention
 
-A full repository consistency check should also be performed regularly:
-
-```bash
-borg check "$BORG_REPO"
-```
-
-For large repositories, a full `borg check` does not need to run after every backup.
-
-## 10. Retention
-
-After a new archive has been successfully created and validated, the script applies this retention policy:
+After a new archive has been successfully created and validated, the script applies:
 
 ```text
 7 daily backups
@@ -207,37 +126,53 @@ After a new archive has been successfully created and validated, the script appl
 12 monthly backups
 ```
 
-This prevents the repository from growing indefinitely.
+Retention is only applied after the new archive passed validation.
 
-## 11. Automatic backups
+## 10. Automatic backups
 
-For a production server, `backup.sh` should normally be executed automatically, for example with a system-wide cron job or a systemd timer.
-
-Example cron job:
+Use a system-wide cron job or systemd timer. Example:
 
 ```cron
 0 3 * * * /opt/nextcloud/backup.sh >> /var/log/nextcloud-backup.log 2>&1
 ```
 
-Choose a schedule appropriate for your data and recovery requirements.
+A separate weekly integrity check can run, for example, Sunday at 04:00:
 
-## 12. Test your backups regularly
+```cron
+0 4 * * 0 /opt/nextcloud/borg-check.sh >> /var/log/nextcloud-borg-check.log 2>&1
+```
+
+## 11. Restore tests
 
 A backup is only trustworthy if it can actually be restored.
 
-Use the separate restore test:
+Use:
 
 ```bash
 sudo /opt/nextcloud/restore-test.sh
 ```
 
-The test uses an isolated Compose environment and a separate Docker volume and is designed not to overwrite production data.
+The test uses a separate Compose project and a separate Docker volume and is designed not to overwrite production data.
 
-See **[RESTORE.md](RESTORE.md)** for the restore test and its limitations.
+## 12. Remote backup repository
 
-## 13. Troubleshooting failed backups
+The destination is controlled by `BORG_REPO`. For example:
 
-If a backup fails, first inspect the script output and logs. Common causes include:
+```env
+BORG_REPO=user@backup-server:/path/to/repository
+```
+
+In that configuration Borg transfers the backup to the remote server over SSH. `BORG_RSH` can optionally select a dedicated SSH key.
+
+## 13. Security
+
+Keep the Borg passphrase and SSH recovery credentials independently from the production server. A remote backup is not sufficient if a total server loss also destroys the only copy of the credentials needed to access it.
+
+For important installations, use a 3-2-1 strategy with an additional independent backup copy.
+
+## 14. Troubleshooting
+
+Common causes of failure include:
 
 - Borg repository is unreachable
 - incorrect Borg passphrase
@@ -248,11 +183,6 @@ If a backup fails, first inspect the script output and logs. Common causes inclu
 - insufficient temporary disk space
 - invalid Docker Compose configuration
 - insufficient permissions
+- failed Borg data verification
 
-**Do not simply remove or disable the safety checks.** They are intended to prevent an incomplete backup from being reported as successful.
-
-## Next step
-
-For restoring a backup, continue with **[RESTORE.md](RESTORE.md)**.
-
-It explains the complete restore process, the isolated restore test and disaster recovery after a complete server failure.
+Do not disable the safety checks just to make a backup report success. Fix the underlying problem instead.
