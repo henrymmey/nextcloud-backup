@@ -1,28 +1,28 @@
-# Backup einrichten und verwenden
+# Backup Setup & Usage
 
-Diese Anleitung erklärt, wie du das Nextcloud-Backup einrichtest und anschließend regelmäßig verwendest.
+This guide explains how to install, configure and use the Nextcloud backup system.
 
-Das Backup erstellt mit `backup.sh` ein **verschlüsseltes BorgBackup** deiner Nextcloud-Dateien und einen **PostgreSQL-SQL-Dump**.
+`backup.sh` creates an **encrypted BorgBackup archive** containing the configured Nextcloud files and a **PostgreSQL SQL dump**.
 
-> **Wichtig:** Das Projekt ist auf eine konkrete Docker-Compose-Installation zugeschnitten. Prüfe vor der ersten Ausführung unbedingt die Service-Namen, Volumes und Pfade deiner echten `docker-compose.yml`.
+> **Important:** This project is designed for a specific Docker Compose installation. Before the first run, compare the service names, volumes and filesystem paths with your actual `docker-compose.yml`.
 
-## 1. Voraussetzungen
+## 1. Requirements
 
-Auf dem Nextcloud-Server werden benötigt:
+The Nextcloud server needs:
 
-- Linux mit Root-Zugriff
+- Linux with root access
 - Docker Engine
 - Docker Compose v2
 - BorgBackup
-- SSH-Zugriff auf das Borg-Backup-Repository
-- eine laufende Nextcloud mit PostgreSQL
-- ausreichend Speicher für einen temporären PostgreSQL-Dump
+- SSH access to the Borg backup repository
+- a running Nextcloud installation using PostgreSQL
+- enough temporary disk space for the PostgreSQL dump
 
-Das Repository muss außerdem erreichbar sein, bevor ein Backup erstellt werden kann.
+The backup repository must be reachable before a backup can be created.
 
-## 2. Dateien installieren
+## 2. Install the scripts
 
-Lege die Skripte beispielsweise unter `/opt/nextcloud` ab:
+A typical installation could look like this:
 
 ```text
 /opt/nextcloud/
@@ -33,7 +33,7 @@ Lege die Skripte beispielsweise unter `/opt/nextcloud` ab:
 └── restore-test.sh
 ```
 
-Die Skripte müssen ausführbar sein:
+Make the scripts executable:
 
 ```bash
 chmod +x /opt/nextcloud/backup.sh
@@ -41,9 +41,9 @@ chmod +x /opt/nextcloud/restore.sh
 chmod +x /opt/nextcloud/restore-test.sh
 ```
 
-## 3. `.env` einrichten
+## 3. Configure `.env`
 
-Erstelle die Konfiguration aus `.env.example`:
+Start with the example configuration:
 
 ```bash
 cp .env.example /opt/nextcloud/.env
@@ -51,18 +51,18 @@ chmod 600 /opt/nextcloud/.env
 chown root:root /opt/nextcloud/.env
 ```
 
-Mindestens benötigt werden:
+At minimum, configure:
 
 ```env
 DB_NAME=nextcloud
 DB_USER=nextcloud
-DB_PASSWORD=DEIN_DB_PASSWORT
+DB_PASSWORD=YOUR_DATABASE_PASSWORD
 
-BORG_REPO=user@backup-server:/pfad/zum/repository
-BORG_PASSPHRASE=DEINE_BORG_PASSPHRASE
+BORG_REPO=user@backup-server:/path/to/repository
+BORG_PASSPHRASE=YOUR_BORG_PASSPHRASE
 ```
 
-Optional können unter anderem Healthcheck-Einstellungen gesetzt werden:
+Optional health-check settings:
 
 ```env
 HEALTHCHECK_URL=http://127.0.0.1/status.php
@@ -70,11 +70,11 @@ HEALTHCHECK_TIMEOUT=120
 POLL_INTERVAL=2
 ```
 
-**Passwörter und Passphrasen niemals in Git committen.** Die `.gitignore` verhindert das versehentliche Hinzufügen von `.env`.
+**Never commit passwords or passphrases to Git.** The repository contains a `.gitignore` that protects the real `.env` from accidental commits.
 
-## 4. Pfade und Container prüfen
+## 4. Check paths and container names
 
-`backup.sh` verwendet standardmäßig eine konkrete Nextcloud-Struktur. Die wichtigsten Einstellungen sind:
+The scripts use defaults for a specific Nextcloud layout. Important settings include:
 
 ```text
 COMPOSE_DIR
@@ -90,169 +90,169 @@ NC_VOLUME
 BORG_REPO
 ```
 
-Wenn deine Installation andere Pfade oder Service-Namen verwendet, müssen die Werte angepasst werden.
+If your installation uses different paths, service names or volume names, adjust the configuration accordingly.
 
-Beispiel:
+For example:
 
 ```bash
 export APP_CONTAINER=nextcloud
 export DB_CONTAINER=postgres
 ```
 
-Noch besser ist eine dauerhafte Anpassung der Konfiguration bzw. der Umgebung des Skripts.
+Do not change these values until you have checked the actual Docker Compose configuration.
 
-## 5. Borg-Zugriff testen
+## 5. Test Borg access
 
-Bevor du das erste Backup startest, muss der Zugriff auf das Repository funktionieren:
+Before creating the first backup, verify that Borg can access the repository:
 
 ```bash
 borg info "$BORG_REPO"
 ```
 
-Wenn SSH verwendet wird, sollte der benötigte Schlüssel bereits eingerichtet sein. Beispiel:
+If SSH is used, make sure the required key is available. For example:
 
 ```env
 BORG_RSH=ssh -i /root/.ssh/borg_backup
 ```
 
-Die Borg-Passphrase muss verfügbar sein.
+The Borg passphrase must also be available to the backup script.
 
-## 6. Erstes Backup erstellen
+## 6. Create the first backup
 
-Wenn Nextcloud läuft und die Konfiguration geprüft wurde:
+Once Nextcloud is running and the configuration has been checked:
 
 ```bash
 sudo /opt/nextcloud/backup.sh
 ```
 
-Das Skript führt vor dem eigentlichen Backup mehrere Prüfungen durch. Unter anderem werden Docker, Compose, PostgreSQL, Borg, die Datenpfade und der verfügbare Speicher geprüft.
+The script performs several preflight checks before starting the backup. It checks, among other things, Docker, Docker Compose, PostgreSQL, Borg, configured paths and available temporary storage.
 
-Erst danach wird Nextcloud in den Maintenance Mode versetzt.
+Only after the preflight checks succeed is Nextcloud placed into Maintenance Mode.
 
-## 7. Was passiert während des Backups?
+## 7. What happens during a backup?
 
-Der Ablauf ist vereinfacht:
+The process is roughly:
 
 ```text
-System prüfen
-    ↓
-Backup-Sperre setzen
-    ↓
-PostgreSQL prüfen
-    ↓
-Nextcloud Maintenance Mode
-    ↓
-PostgreSQL-Dump erstellen
-    ↓
-Dump prüfen + SHA-256 berechnen
-    ↓
-Metadaten erstellen
-    ↓
-Borg-Archiv erstellen
-    ↓
-Archiv prüfen
-    ↓
-Retention anwenden
-    ↓
-Maintenance Mode verlassen
+Check the system
+      ↓
+Acquire backup lock
+      ↓
+Check PostgreSQL
+      ↓
+Enable Nextcloud Maintenance Mode
+      ↓
+Create PostgreSQL dump
+      ↓
+Validate dump + calculate SHA-256
+      ↓
+Create backup metadata
+      ↓
+Create Borg archive
+      ↓
+Validate archive
+      ↓
+Apply retention policy
+      ↓
+Disable Maintenance Mode
 ```
 
-Wenn das Skript abgebrochen wird oder ein Fehler auftritt, versucht es, den Maintenance Mode wieder zu deaktivieren und temporäre Dateien zu entfernen.
+If the script is interrupted or an error occurs, it attempts to disable Maintenance Mode and remove temporary files.
 
-## 8. Was wird gesichert?
+## 8. What is backed up?
 
-Das Archiv enthält die für diesen Restore benötigten Teile der Installation:
+The archive contains the configured parts required for a restore:
 
 - `docker-compose.yml`
 - `.env`
-- Nextcloud-Konfiguration
-- Nextcloud-Daten
+- Nextcloud configuration
+- Nextcloud data
 - AppData
-- konfiguriertes lokales External Storage
-- konfiguriertes Nextcloud-Docker-Volume
-- PostgreSQL-SQL-Dump
+- configured local External Storage
+- configured Nextcloud Docker volume
+- PostgreSQL SQL dump
 - `backup-metadata.json`
 
-Das PostgreSQL-Live-Datenverzeichnis wird nicht als rohe Dateikopie gesichert.
+The PostgreSQL live data directory is not copied as raw database files. The logical SQL dump is used instead.
 
-## 9. Backup prüfen
+## 9. Verify backups
 
-Nach einem Backup kannst du die Archive anzeigen:
+List the available archives:
 
 ```bash
 borg list "$BORG_REPO"
 ```
 
-Informationen zum Repository:
+Show repository information:
 
 ```bash
 borg info "$BORG_REPO"
 ```
 
-Regelmäßig sollte zusätzlich eine vollständige Repository-Prüfung erfolgen:
+A full repository consistency check should also be performed regularly:
 
 ```bash
 borg check "$BORG_REPO"
 ```
 
-Bei großen Repositories muss `borg check` nicht nach jedem einzelnen Backup laufen.
+For large repositories, a full `borg check` does not need to run after every backup.
 
-## 10. Aufbewahrung
+## 10. Retention
 
-Nach erfolgreicher Erstellung und Prüfung des neuen Backups verwendet das Skript folgende Aufbewahrung:
+After a new archive has been successfully created and validated, the script applies this retention policy:
 
 ```text
-7 tägliche Backups
-4 wöchentliche Backups
-12 monatliche Backups
+7 daily backups
+4 weekly backups
+12 monthly backups
 ```
 
-Dadurch wächst das Repository nicht unbegrenzt weiter.
+This prevents the repository from growing indefinitely.
 
-## 11. Regelmäßige Backups
+## 11. Automatic backups
 
-Für einen produktiven Server sollte `backup.sh` automatisiert ausgeführt werden, beispielsweise über einen systemweiten Cronjob oder einen systemd-Timer.
+For a production server, `backup.sh` should normally be executed automatically, for example with a system-wide cron job or a systemd timer.
 
-Beispiel für einen Cronjob:
+Example cron job:
 
 ```cron
 0 3 * * * /opt/nextcloud/backup.sh >> /var/log/nextcloud-backup.log 2>&1
 ```
 
-Die konkrete Planung hängt davon ab, wie oft deine Nextcloud gesichert werden soll.
+Choose a schedule appropriate for your data and recovery requirements.
 
-## 12. Restore regelmäßig testen
+## 12. Test your backups regularly
 
-Ein Backup ist erst wirklich vertrauenswürdig, wenn die Wiederherstellung getestet wurde.
+A backup is only trustworthy if it can actually be restored.
 
-Dafür gibt es:
+Use the separate restore test:
 
 ```bash
 sudo /opt/nextcloud/restore-test.sh
 ```
 
-Der Test verwendet eine separate Compose-Umgebung und ein separates Docker-Volume und soll die produktiven Daten nicht überschreiben.
+The test uses an isolated Compose environment and a separate Docker volume and is designed not to overwrite production data.
 
-Die vollständige Restore-Anleitung findest du in **[RESTORE.md](RESTORE.md)**.
+See **[RESTORE.md](RESTORE.md)** for the restore test and its limitations.
 
-## 13. Wenn das Backup fehlschlägt
+## 13. Troubleshooting failed backups
 
-Bei einem Fehler sollte zuerst die Ausgabe des Skripts geprüft werden. Typische Ursachen sind:
+If a backup fails, first inspect the script output and logs. Common causes include:
 
-- Borg-Repository nicht erreichbar
-- falsche Borg-Passphrase
-- PostgreSQL nicht erreichbar
-- falsche DB-Zugangsdaten
-- falsche Container-Namen
-- fehlende Verzeichnisse
-- zu wenig temporärer Speicher
-- ungültige Compose-Konfiguration
-- fehlende Berechtigungen
+- Borg repository is unreachable
+- incorrect Borg passphrase
+- PostgreSQL is unavailable
+- incorrect database credentials
+- incorrect container names
+- missing directories
+- insufficient temporary disk space
+- invalid Docker Compose configuration
+- insufficient permissions
 
-**Nicht einfach die Prüfungen entfernen.** Sie sollen verhindern, dass ein fehlerhaftes oder unvollständiges Backup als erfolgreich behandelt wird.
+**Do not simply remove or disable the safety checks.** They are intended to prevent an incomplete backup from being reported as successful.
 
-## Nächster Schritt
+## Next step
 
-Wenn du einen Restore durchführen musst, lies **[RESTORE.md](RESTORE.md)**.
+For restoring a backup, continue with **[RESTORE.md](RESTORE.md)**.
 
-Dort wird die Wiederherstellung, der Restore-Test und die Vorgehensweise bei einem vollständigen Serververlust erklärt.
+It explains the complete restore process, the isolated restore test and disaster recovery after a complete server failure.
