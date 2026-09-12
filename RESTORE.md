@@ -1,214 +1,246 @@
-# Restore Guide
+# Restore und Disaster Recovery
 
-`restore.sh` ist ein vollständiger Restore und kein Werkzeug zum Wiederherstellen einzelner Dateien. Es darf nur mit bewusst ausgewähltem Recovery Point und ausreichendem Rollback-/Backup-Plan eingesetzt werden.
+Diese Anleitung erklärt, wie du eine Nextcloud aus einem vorhandenen Borg-Backup wiederherstellst.
 
-## Sicherheitsmodell
+> **Achtung:** `restore.sh` ist ein vollständiger Restore. Dabei werden die aktuelle Datenbank und produktive Dateien ersetzt. Verwende das Skript nur, wenn du bewusst einen bestimmten Backup-Stand wiederherstellen möchtest.
 
-Der gefährliche Ablauf
+Für einen normalen Test eines Backups verwende stattdessen `restore-test.sh`.
 
-```text
-rm -rf produktive_daten
-restore
-```
+## 1. Wann brauche ich einen Restore?
 
-wird vermieden.
+Ein Restore kann beispielsweise notwendig sein, wenn:
 
-Stattdessen:
+- Dateien versehentlich gelöscht wurden
+- die Nextcloud-Installation beschädigt wurde
+- die Datenbank beschädigt wurde
+- nach einem größeren Fehler ein älterer Stand benötigt wird
+- ein kompletter Server neu aufgebaut werden muss
 
-```text
-Borg-Archiv auswählen
-        ↓
-Archiv + Dump + Metadaten validieren
-        ↓
-Compose stoppen
-        ↓
-aktuellen DB-Zustand als Rollback-Dump sichern
-        ↓
-alle Restore-Daten vorbereiten
-        ↓
-Dateien kontrolliert umschalten
-        ↓
-PostgreSQL bereit machen
-        ↓
-DB neu erstellen + Dump importieren
-        ↓
-Nextcloud starten
-        ↓
-occ status + HTTP-Healthcheck
-        ↓
-Erfolg → Rollback-Zustand löschen
-```
+Ein einzelnes Dokument wird dabei nicht separat wiederhergestellt. `restore.sh` stellt den ausgewählten Recovery Point als gesamten Nextcloud-Zustand wieder her.
 
-Bis zur Archivvalidierung werden keine Produktionsdaten verändert.
+## 2. Voraussetzungen
 
-## Voraussetzungen
+Vor dem Restore müssen vorhanden sein:
 
-- root
+- Root-Zugriff auf den Nextcloud-Server
 - Docker Engine
 - Docker Compose v2
 - BorgBackup
-- `curl`
-- Zugriff auf das Borg Repository
+- Zugriff auf das Borg-Repository
 - Borg-Passphrase
-- initiale `.env` und Compose-Datei
-- genügend Speicher für extrahiertes Archiv und Rollback-DB-Dump
+- SSH-Zugang zum Backup-Repository, falls erforderlich
+- die initiale `.env`
+- eine passende Docker-Compose-Konfiguration
+- ausreichend freier Speicher für Archiv und Rollback-Daten
 
-## Restore starten
+Bei einem komplett zerstörten Server müssen diese Voraussetzungen zuerst auf dem neuen System eingerichtet werden.
+
+## 3. Vor dem Restore
+
+**Wenn der aktuelle Server noch funktioniert, erstelle nach Möglichkeit ein aktuelles Backup.**
+
+Prüfe außerdem:
+
+```bash
+docker compose ps
+borg list "$BORG_REPO"
+```
+
+Wenn möglich, sollte der gewünschte Recovery Point vorher eindeutig festgelegt werden.
+
+## 4. Restore starten
+
+Starte:
 
 ```bash
 sudo /opt/nextcloud/restore.sh
 ```
 
-Das Skript prüft zuerst das gewünschte Archiv mit `borg info`, extrahiert es anschließend temporär und validiert:
+Das Skript zeigt die verfügbaren Borg-Archive an. Wähle den gewünschten Recovery Point aus und bestätige den eigentlichen Restore anschließend ausdrücklich mit `yes`.
 
-- PostgreSQL-Dump vorhanden und nicht leer
-- Metadaten vorhanden
-- Dumpgröße und SHA-256 passend zu den Metadaten
-- Compose-Datei und `.env` passend zu den Metadaten
-- erwartete Datenpfade vorhanden
-- Docker-Volume vorhanden
-- initiale DB-Zugangsdaten passend zur archivierten `.env`
+Bis zur Archivprüfung werden keine produktiven Daten verändert.
 
-Erst danach wird eine explizite Eingabe von `yes` verarbeitet und der produktive Zustand verändert.
+## 5. Was prüft das Skript?
 
-## Rollback
+Vor dem eigentlichen Restore wird unter anderem geprüft:
 
-Vor dem Austausch der produktiven Dateien wird die aktuelle PostgreSQL-Datenbank als SQL-Dump gesichert. Außerdem werden vorhandene Dateien und das Docker-Volume in einem privaten temporären Rollback-Verzeichnis aufbewahrt.
+- Borg-Archiv ist erreichbar
+- Archiv enthält die erwarteten Dateien
+- PostgreSQL-Dump ist vorhanden und nicht leer
+- Dump-Größe und SHA-256 passen zu den Metadaten
+- Compose-Datei und `.env` passen zu den gespeicherten Metadaten
+- benötigte Nextcloud-Pfade sind vorhanden
+- Docker-Volume ist vorhanden
+- Datenbank-Zugangsdaten passen zur gespeicherten Konfiguration
 
-Bei einem Fehler nach dem Umschalten versucht das Skript:
+Die archivierte `.env` wird dabei nicht als Shell-Skript ausgeführt.
 
-1. die Datenbank aus dem Rollback-Dump wiederherzustellen
-2. die vorherigen Dateien und das Docker-Volume zurückzusetzen
-3. den Stack wieder zu starten, wenn er vorher lief
+## 6. Was passiert beim Restore?
 
-Ein Rollback ist eine Schutzmaßnahme, keine Garantie. Stromausfall, defektes Dateisystem oder fehlender Speicher können auch einen Rollback verhindern. Ein externes Backup bleibt zwingend erforderlich.
+Der Ablauf sieht vereinfacht so aus:
 
-## PostgreSQL-Restore
+```text
+Recovery Point auswählen
+        ↓
+Archiv vollständig prüfen
+        ↓
+aktuellen Zustand vorbereiten
+        ↓
+aktuellen PostgreSQL-Zustand als Rollback-Dump sichern
+        ↓
+Nextcloud/Compose kontrolliert stoppen
+        ↓
+Backup-Dateien bereitstellen
+        ↓
+Dateien und Docker-Volume umschalten
+        ↓
+PostgreSQL starten
+        ↓
+Datenbank neu erstellen
+        ↓
+SQL-Dump importieren
+        ↓
+Nextcloud starten
+        ↓
+occ status + HTTP prüfen
+        ↓
+Erfolg → Rollback-Daten löschen
+```
 
-Das Skript:
+Es gibt keine feste Wartezeit wie `sleep 15`. Stattdessen wartet das Skript mit Readiness-Prüfungen auf PostgreSQL und Nextcloud.
 
-1. startet PostgreSQL
-2. wartet mit `pg_isready` auf echte Bereitschaft
-3. beendet bestehende Verbindungen zur Ziel-DB
-4. erstellt die Datenbank neu
-5. importiert mit `psql -v ON_ERROR_STOP=1`
-6. prüft anschließend erneut die DB-Verbindung
+## 7. Rollback-Schutz
 
-Es gibt keine feste `sleep 15`-Annahme.
+Vor dem Austausch des produktiven Zustands wird die aktuelle PostgreSQL-Datenbank als SQL-Dump gesichert. Außerdem werden vorhandene Dateien und das Docker-Volume in einem temporären Rollback-Verzeichnis aufbewahrt.
 
-`DB_NAME` und `DB_USER` werden auf sichere SQL-Identifier-Zeichen beschränkt.
+Wenn der Restore nach dem Umschalten fehlschlägt, versucht das Skript:
 
-## Nextcloud-Healthcheck
+1. die vorherige Datenbank wiederherzustellen
+2. die vorherigen Dateien wiederherzustellen
+3. das vorherige Docker-Volume wiederherzustellen
+4. den Compose-Stack wieder zu starten, wenn er vorher lief
 
-Nach dem Start wird auf:
+Ein Rollback ist **keine Garantie**. Bei beispielsweise einem Stromausfall, einem defekten Dateisystem oder fehlendem Speicher kann auch das Rollback scheitern. Deshalb sind zusätzliche externe Backups wichtig.
+
+## 8. PostgreSQL
+
+Beim Datenbank-Restore wird:
+
+1. PostgreSQL gestartet
+2. mit `pg_isready` auf Bereitschaft gewartet
+3. die Ziel-Datenbank neu erstellt
+4. der SQL-Dump mit `ON_ERROR_STOP=1` importiert
+5. die Verbindung erneut geprüft
+
+Die verwendete PostgreSQL-Version sollte mit dem Backup bzw. der Nextcloud-Installation kompatibel sein.
+
+## 9. Nextcloud prüfen
+
+Nach dem Restore prüft das Skript unter anderem:
 
 ```bash
 docker compose exec -T app php /var/www/html/occ status
 ```
 
-und zusätzlich auf einen HTTP-Request gegen:
+Zusätzlich wird die konfigurierte URL geprüft:
 
 ```env
 HEALTHCHECK_URL=http://127.0.0.1/status.php
 ```
 
-gewartet.
-
-Timeout und Polling sind konfigurierbar:
+Timeout und Polling können angepasst werden:
 
 ```env
 HEALTHCHECK_TIMEOUT=120
 POLL_INTERVAL=2
 ```
 
-## Konfiguration
+## 10. Nach dem Restore manuell prüfen
 
-Ein Recovery Point enthält die originale:
+Auch wenn das Skript erfolgreich endet, sollte Nextcloud manuell geprüft werden:
 
-```text
-docker-compose.yml
-.env
-```
+- Anmeldung funktioniert
+- Benutzer sind vorhanden
+- Dateien lassen sich öffnen
+- Upload funktioniert
+- Download funktioniert
+- AppData funktioniert
+- External Storage funktioniert
+- Freigaben funktionieren
+- Background Jobs funktionieren
+- Reverse Proxy und HTTPS funktionieren
+- Docker-Logs enthalten keine neuen kritischen Fehler
 
-Die archivierte `.env` wird **nicht als Shell-Code eingelesen**, da sie als Backupdaten untrusted ist. Docker Compose verwendet sie nach dem kontrollierten Austausch als Konfiguration.
+Danach sollte möglichst bald wieder ein neues Backup erstellt werden.
 
-Die initialen DB-Zugangsdaten müssen mit dem archivierten Recovery Point übereinstimmen. Das verhindert, dass versehentlich ein Restore in eine nicht passende Datenbankumgebung ausgeführt wird.
+## 11. Restore-Test ohne produktive Daten zu ersetzen
 
-## Disaster Recovery
-
-Bei komplettem Serververlust:
-
-```text
-Neuer Server
-    ↓
-Linux installieren
-    ↓
-Docker + Compose v2 installieren
-    ↓
-Borg installieren
-    ↓
-SSH-Key wiederherstellen
-    ↓
-Borg-Passphrase aus unabhängigem Speicher holen
-    ↓
-/opt/nextcloud + Mountpoints anlegen
-    ↓
-initiale .env + Compose bereitstellen
-    ↓
-borg list "$BORG_REPO"
-    ↓
-restore.sh
-    ↓
-Healthchecks
-```
-
-Danach mindestens Login, Benutzer, Dateien, Upload/Download, AppData, External Storage, Background Jobs und Reverse Proxy/HTTPS prüfen.
-
-## Restore-Test
-
-Zerstörungsfreier Test:
+Wenn du nur überprüfen möchtest, ob ein Backup grundsätzlich wiederherstellbar ist, verwende:
 
 ```bash
 sudo /opt/nextcloud/restore-test.sh
 ```
 
-oder:
+Oder für ein bestimmtes Archiv:
 
 ```bash
 sudo /opt/nextcloud/restore-test.sh nextcloud-YYYY-MM-DD_HH-MM-SS
 ```
 
-Der Test verwendet ein eigenes Compose-Projekt, eigene Bind-Mounts und ein eigenes Docker-Volume. Die Produktionspfade werden nicht als Restore-Ziele verwendet.
+Der Test verwendet ein eigenes Compose-Projekt, eigene temporäre Bind-Mounts und ein eigenes Docker-Volume.
 
-Der Test verweigert Compose-Dateien mit `container_name:`, `network_mode: host`, veröffentlichten Ports oder externen Volumes/Netzwerken, weil eine sichere Isolation sonst nicht garantiert werden kann.
+Der Test ist absichtlich eingeschränkt und verweigert unter anderem Compose-Dateien mit:
 
-## Nach dem Restore
+- `container_name:`
+- `network_mode: host`
+- veröffentlichten Ports
+- externen Volumes oder Netzwerken
 
-```bash
-docker compose ps
-docker compose exec -T app php /var/www/html/occ status
-docker compose exec -T db pg_isready -U "$DB_USER" -d "$DB_NAME"
+Damit soll verhindert werden, dass ein vermeintlich isolierter Test versehentlich die produktive Umgebung beeinflusst.
+
+## 12. Kompletter Serververlust
+
+Wenn der gesamte Server ausgefallen ist:
+
+```text
+Neuen Server bereitstellen
+        ↓
+Linux installieren
+        ↓
+Docker + Compose v2 installieren
+        ↓
+BorgBackup installieren
+        ↓
+SSH-Zugang zum Backup-Repository wiederherstellen
+        ↓
+Borg-Passphrase bereitstellen
+        ↓
+Mountpoints + Compose vorbereiten
+        ↓
+.env bereitstellen
+        ↓
+borg list "$BORG_REPO"
+        ↓
+restore.sh
+        ↓
+Nextcloud prüfen
+        ↓
+neues Backup erstellen
 ```
 
-Zusätzlich manuell prüfen:
+Die Borg-Passphrase, der SSH-Zugang und die benötigten Zugangsdaten dürfen deshalb nicht ausschließlich auf dem ursprünglichen Server gespeichert werden.
 
-- Login
-- vorhandene Benutzer
-- Dateien öffnen
-- Upload/Download
-- AppData
-- External Storage
-- Sharing
-- Background Jobs
-- Reverse Proxy/HTTPS
-- Container-Logs
+## 13. Wichtige Grenzen
 
-Danach ein neues Backup erstellen.
+- `restore.sh` ist kein Werkzeug für einzelne Dateien.
+- PostgreSQL-, Nextcloud- und Compose-Versionen müssen kompatibel sein.
+- Ein lokaler Mountpoint eines entfernten External Storages bedeutet nicht automatisch, dass das entfernte System gesichert wurde.
+- Der HTTP-Healthcheck ersetzt keine vollständige manuelle Prüfung.
+- Der Restore-Test bildet DNS, TLS, Reverse Proxy und externe Storage-Systeme nicht vollständig nach.
+- Die tatsächliche `docker-compose.yml` muss zur erwarteten Struktur des Projekts passen.
 
-## Grenzen
+## Weiterführend
 
-- PostgreSQL-/Nextcloud-/Compose-Versionen müssen zum Recovery Point kompatibel sein.
-- Ein lokaler Mountpoint eines entfernten External Storages sichert nicht automatisch das entfernte System.
-- Ein Rollback kann bei Hardware-/Filesystemfehlern scheitern.
-- Ein HTTP-Healthcheck ersetzt keine vollständige manuelle Funktionsprüfung.
-- Der Restore-Test simuliert nicht DNS, TLS-Zertifikate, Reverse Proxy oder externe Storage-Systeme vollständig.
+Für die Einrichtung und den normalen Backup-Betrieb siehe **[BACKUP.md](BACKUP.md)**.
+
+Für einen Test des Backups ohne produktiven Restore verwende **`restore-test.sh`**.
