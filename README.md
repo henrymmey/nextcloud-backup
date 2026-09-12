@@ -1,27 +1,29 @@
 # Nextcloud Backup & Restore
 
-Dieses Projekt sichert eine **Nextcloud-Installation mit Docker Compose** und stellt sie bei Bedarf aus einem Backup wieder her.
+A simple and reliable backup and restore solution for a **Docker Compose-based Nextcloud installation**.
 
-Es verwendet:
+This project is designed to protect the important parts of your Nextcloud installation and make it possible to restore a complete working state when something goes wrong.
 
-- **BorgBackup** für verschlüsselte Backups und Aufbewahrung
-- **PostgreSQL `pg_dump`** für die Datenbank
-- **Docker Compose** für die Nextcloud-Umgebung
-- **Maintenance Mode**, damit während des Backups keine Änderungen an Nextcloud-Daten erfolgen
-- **Prüfungen und Metadaten**, damit fehlerhafte Backups möglichst früh erkannt werden
-- einen **Restore mit Rollback-Schutz**
-- einen **separaten Restore-Test**, ohne den produktiven Zustand zu überschreiben
+It uses:
 
-Das Projekt ist auf eine konkrete Docker-/Filesystem-Struktur ausgelegt. Die Pfade und Container-Namen werden über die Konfiguration angepasst.
+- **BorgBackup** for encrypted backups and retention
+- **PostgreSQL `pg_dump`** for database backups
+- **Docker Compose** for the Nextcloud environment
+- **Nextcloud Maintenance Mode** during backups
+- **Backup validation and metadata** to detect incomplete backups
+- **Rollback protection** during restores
+- a separate **restore test** that does not replace the production installation
 
-## Schnellüberblick
+> **Important:** This project is designed for a specific Docker/Filesystem layout. Before using it, compare the configuration with your actual `docker-compose.yml`, volume definitions and filesystem paths.
+
+## How it works
 
 ```text
 Nextcloud
    │
-   ├── Dateien / Konfiguration
-   ├── PostgreSQL-Datenbank
-   └── Docker-Umgebung
+   ├── Files & configuration
+   ├── PostgreSQL database
+   └── Docker environment
            │
            ▼
       backup.sh
@@ -30,147 +32,156 @@ Nextcloud
       BorgBackup
            │
            ▼
-   externes Backup-Repository
+   Backup repository
 ```
 
-Für die tägliche Nutzung sind vor allem diese drei Skripte wichtig:
+The backup contains the files needed to rebuild the configured Nextcloud environment together with a PostgreSQL database dump.
 
-| Datei | Wofür? |
-|---|---|
-| `backup.sh` | Erstellt und prüft ein Backup und wendet die Aufbewahrungsregeln an. |
-| `restore.sh` | Stellt einen ausgewählten Backup-Stand wieder her. |
-| `restore-test.sh` | Testet einen Restore möglichst isoliert, ohne die produktiven Daten zu ersetzen. |
+## Main scripts
 
-## Dokumentation
+| File | Purpose |
+| --- | --- |
+| `backup.sh` | Creates, validates and retains backups. |
+| `restore.sh` | Restores a selected backup with validation and rollback protection. |
+| `restore-test.sh` | Tests whether a backup can be restored in an isolated environment. |
 
-### Backup einrichten und verwenden
+## Documentation
+
+The README intentionally provides only an overview. The detailed user documentation is split into two guides.
+
+### Backup setup and daily use
 
 ➡️ **[BACKUP.md](BACKUP.md)**
 
-Dort wird Schritt für Schritt erklärt:
+This guide explains step by step:
 
-- welche Voraussetzungen benötigt werden
-- wie `.env` eingerichtet wird
-- welche Pfade konfiguriert werden müssen
-- wie `backup.sh` installiert und ausgeführt wird
-- was während eines Backups passiert
-- welche Daten gesichert werden
-- wie Backups überprüft werden
-- wie die Aufbewahrung funktioniert
-- wie regelmäßige Restore-Tests durchgeführt werden
+- what you need before installing the backup
+- how to install the scripts
+- how to configure `.env`
+- how to configure paths and container names
+- how to configure BorgBackup
+- how to run the first backup
+- what happens during a backup
+- what is included in a backup
+- how to verify backups
+- how retention works
+- how to schedule automatic backups
+- how to perform regular restore tests
+- how to troubleshoot failed backups
 
-### Restore und Disaster Recovery
+**If you are setting up this project for the first time, start with `BACKUP.md`.**
+
+### Restore and disaster recovery
 
 ➡️ **[RESTORE.md](RESTORE.md)**
 
-Dort wird erklärt:
+This guide explains:
 
-- wie ein Restore vorbereitet und gestartet wird
-- wie ein Backup-Stand ausgewählt wird
-- welche Sicherheitsprüfungen vor dem Restore stattfinden
-- wie der vorhandene Zustand geschützt wird
-- wie PostgreSQL wiederhergestellt wird
-- wie Nextcloud nach dem Restore geprüft wird
-- wie ein kompletter Serververlust behandelt wird
-- wie der zerstörungsfreie Restore-Test funktioniert
-- was nach einem erfolgreichen Restore geprüft werden sollte
+- when you should use a restore
+- how to select a recovery point
+- how to safely start a restore
+- what the restore script checks before changing anything
+- how rollback protection works
+- how PostgreSQL is restored
+- how Nextcloud is checked afterwards
+- how to test a backup without touching production
+- how to recover after a complete server failure
+- what you should manually verify after a restore
 
-**Wenn du das Projekt neu einrichtest, lies zuerst `BACKUP.md`. Für einen Restore oder einen Serverausfall ist `RESTORE.md` die maßgebliche Anleitung.**
+**If you need to restore Nextcloud or recover from a server failure, use `RESTORE.md`.**
 
-## Was wird gesichert?
+## What is backed up?
 
-Ein Backup enthält die für die Wiederherstellung benötigten Teile der Nextcloud-Umgebung:
+A backup contains the configured parts of the Nextcloud environment, including:
 
-- Docker-Compose-Konfiguration
+- Docker Compose configuration
 - `.env`
-- Nextcloud-Konfiguration
-- Nextcloud-Daten
+- Nextcloud configuration
+- Nextcloud data
 - AppData
-- lokales External Storage
-- das konfigurierte Nextcloud-Docker-Volume
-- PostgreSQL als logischen SQL-Dump
-- automatisch erzeugte Backup-Metadaten
+- configured local External Storage
+- the configured Nextcloud Docker volume
+- a PostgreSQL SQL dump
+- automatically generated backup metadata
 
-Das PostgreSQL-Live-Datenverzeichnis wird **nicht** als rohe Dateikopie gesichert. Stattdessen wird `pg_dump` verwendet.
+The PostgreSQL live data directory is **not** copied as raw database files. PostgreSQL is backed up using `pg_dump` instead.
 
-Ein entfernter External Storage wird nur dann durch dieses Backup erfasst, wenn seine Daten tatsächlich auf dem angegebenen lokalen Pfad liegen.
+A remote External Storage system is only covered if its actual data is available on the local path being backed up. Backing up a mount point does not automatically back up the remote system itself.
 
-## Wie funktioniert ein Backup?
+## Backup validation
 
-`backup.sh` prüft zunächst die Umgebung, bevor Nextcloud in den Maintenance Mode versetzt wird. Anschließend wird die Datenbank gesichert und zusammen mit den Nextcloud-Daten in ein Borg-Archiv geschrieben.
+Before creating a backup, the script performs several checks, including Docker, Docker Compose, PostgreSQL, BorgBackup, configured paths and available temporary storage.
 
-Das neu erstellte Archiv wird anschließend geprüft. Optional wird der SQL-Dump sogar direkt aus dem Borg-Archiv gelesen und erneut mit seinem ursprünglichen Hash verglichen.
+Nextcloud is only placed into Maintenance Mode after these checks succeed.
 
-Bei einem erfolgreichen Backup wird anschließend die konfigurierte Aufbewahrung angewendet:
+After the Borg archive has been created, the archive is checked again. The PostgreSQL dump can also be read directly from the new Borg archive and verified using its SHA-256 hash.
 
-```text
-7 tägliche Backups
-4 wöchentliche Backups
-12 monatliche Backups
-```
-
-Weitere Informationen: **[BACKUP.md](BACKUP.md)**
-
-## Wie funktioniert ein Restore?
-
-`restore.sh` löscht nicht einfach zuerst die produktiven Daten. Vor dem eigentlichen Restore werden das Archiv und seine Inhalte geprüft. Der aktuelle Zustand wird zusätzlich für einen möglichen Rollback vorbereitet.
-
-Vereinfacht:
+The default retention policy is:
 
 ```text
-Backup auswählen
-      ↓
-Backup prüfen
-      ↓
-aktuellen Zustand absichern
-      ↓
-Restore vorbereiten
-      ↓
-PostgreSQL wiederherstellen
-      ↓
-Nextcloud starten
-      ↓
-Nextcloud + HTTP prüfen
-      ↓
-Erfolg oder Rollback
+7 daily backups
+4 weekly backups
+12 monthly backups
 ```
 
-Weitere Informationen: **[RESTORE.md](RESTORE.md)**
+## Restore protection
 
-## Restore-Test
+`restore.sh` does not simply delete the production data and copy the backup over it.
 
-Ein Backup sollte nicht nur existieren, sondern auch wiederherstellbar sein. Dafür gibt es `restore-test.sh`.
+Before changing the production environment, it:
 
-Der Test verwendet eine separate Compose-Umgebung und ein separates Docker-Volume. Er ist dafür gedacht, regelmäßig zu überprüfen, ob ein Backup tatsächlich wiederhergestellt werden kann.
+1. validates the selected archive
+2. validates the database dump and metadata
+3. prepares a rollback copy of the current database
+4. prepares the existing files and Docker volume for rollback
+5. applies the restored data
+6. restores PostgreSQL
+7. starts Nextcloud
+8. checks `occ status` and HTTP availability
+9. keeps the rollback data until the restore succeeds
+
+If a restore fails, the script attempts to restore the previous state.
+
+> A rollback is a safety mechanism, not a guarantee. Hardware, filesystem or storage failures can also prevent rollback.
+
+## Restore testing
+
+A backup should not only exist — it should also be restorable.
+
+`restore-test.sh` is provided to test a backup without replacing the production data:
 
 ```bash
 sudo /opt/nextcloud/restore-test.sh
 ```
 
-Details und Einschränkungen des Tests stehen in **[RESTORE.md](RESTORE.md)**.
+The test uses a separate Docker Compose project, temporary bind mounts and a separate Docker volume.
 
-## Sicherheit
+See **[RESTORE.md](RESTORE.md)** for details and limitations.
 
-Die echte `.env` gehört **nicht in Git**. Sie kann im verschlüsselten Borg-Backup enthalten sein, muss aber zusätzlich an einem sicheren, unabhängigen Ort verfügbar sein. Dasselbe gilt für die Borg-Passphrase und den für das Repository benötigten SSH-Zugang.
+## Security
 
-Ein Backup auf demselben Server schützt nicht vor einem vollständigen Serverausfall. Für wichtige Daten wird deshalb eine **3-2-1-Backup-Strategie** empfohlen.
+Never commit the real `.env` file to Git. It contains credentials and other sensitive configuration.
 
-## Wichtiger Hinweis zur Einrichtung
+The Borg passphrase, SSH credentials and other recovery credentials should also be stored independently from the production server. Otherwise, a complete server loss could also mean losing the information required to access the backups.
 
-Dieses Repository enthält die Backup-/Restore-Skripte und Dokumentation, aber nicht zwingend die tatsächliche produktive `docker-compose.yml` deiner Nextcloud-Installation.
+For important installations, use a **3-2-1 backup strategy** with an additional independent backup copy.
 
-Vor dem Einsatz müssen deshalb insbesondere folgende Punkte mit der echten Compose-Konfiguration abgeglichen werden:
+## Important: check your Docker Compose setup
 
-- Service-Namen
-- Docker-Volumes
-- Bind-Mounts
-- Nextcloud-Datenpfade
-- PostgreSQL-Konfiguration
-- External Storage
-- Reverse Proxy / Ports
+This repository contains the backup and restore scripts, but it does not necessarily contain your actual production `docker-compose.yml`.
 
-**Nicht blind die Beispielwerte übernehmen.** Die konkrete Installation muss zu den konfigurierten Pfaden und Containern passen.
+Before using the scripts, verify at least:
 
-## Lizenz
+- service names
+- Docker volume names
+- bind mounts
+- Nextcloud data paths
+- PostgreSQL configuration
+- External Storage paths
+- reverse proxy and network configuration
 
-Siehe die Lizenzdatei bzw. die Repository-Einstellungen.
+**Do not blindly use the example values.** The configuration must match your actual Nextcloud installation.
+
+## License
+
+See the repository license information.
