@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+*.sql
+*.sql.gz
+*.log
+/tmp/
+/restore-test-data/
